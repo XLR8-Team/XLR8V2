@@ -5,17 +5,17 @@ TODO:
 ----------------
 
 Pin Mapping:
-Physical Pin  Arduino Pin    Port Pin     Function
+Physical Pin   Arduino Pin    Port Pin     Function
 ======================================
-2                              PD4          BTN1
-10                             PD6          BTN2
-11                             PD7          BTN3
-12                             PB0          BTN4
-13                             PB1          BTN5
-1                              PD3          BTN6
-23                             PC0          BTN7
-24                             PC1          BTN8
-25                             PC2          BTN9
+19                A0             PC0          SEN1
+20                A1             PC1          SEN2
+21                A2             PC2          SEN3
+22                A3             PC3          SEN4
+23                A4             PC4          SEN5
+24                A5             PC5          SEN6
+25                A6             PC0          SEN7
+26                A7             PC1          SEN8
+16                D13            AAA          LED ON SENSOR
 13                             PB1          CE
 14                             PB2          CSN
 17                             PB5          SCK
