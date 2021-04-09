@@ -3,8 +3,6 @@ XLR8 V2
 
 TODO:
 * Agregar control PID
-* Agregar control motores
-* Agregar posicion
 ----------------
 
 Pin Mapping:
@@ -19,13 +17,13 @@ Physical Pin      Arduino Pin    Port Pin     Function
 25                A6             PC0          SEN7
 26                A7             PC1          SEN8
 16                D13            PB5          LED_ON_SENSOR
-13                D10            PB2          PWM_TURBINA
+13                D10            PB2          PWM_TURBINA     OC1B
 05                D2             PD2          M_START         PCINT18
 10                D7             PD7          BTN_CALIBRA     PCINT23
 11                D8             PB0          LED_VERDE
 12                D9             PB1          LED_ROJO
-06                D3             PD3          PWMA
-14                D11            PB3          PWMB
+06                D3             PD3          PWMA            OC2B
+14                D11            PB3          PWMB            OC2A
 07                D4             PD4          AIN2
 08                D5             PD5          AIN1
 09                D6             PD6          BIN1
@@ -39,6 +37,7 @@ Physical Pin      Arduino Pin    Port Pin     Function
 #include <avr/interrupt.h>
 #include <util/delay.h>
 #include <ADC.h>
+#include <PWM.h>
 
 // Pines direccion puente h
 #define MOT_DER_ADELANTE  PB4
@@ -67,19 +66,20 @@ unsigned long t_blink = 0;
 
 volatile uint16_t sensores[8];
 uint16_t lecturaFondoMax[100];
-long int sumap;
-long int suma;
-long int pos;
+
+uint8_t factor = 100; // factor multiplicativo sensor promedio ponderado (calculo de posicion)
+int posicion;
 
 uint16_t umbral;
 boolean linea = true; // true = Linea Negra // false = Linea Blanca
 
-
 void calibrar();
+void leerSensores();
+void motores();
 void stroberOn();
 void blinkOn();
-void leerSensores();
 
+int calcPosicion();
 
 void setup() {
   cli();
@@ -91,11 +91,14 @@ void setup() {
 
   //CONFIGURACION PINES DE SALIDA
   DDRB = 0xFF; // Todos los pines del puerto B
-  PORTB = 0x00; // OFF ALL
+  //PORTB = 0x00; // OFF ALL
   DDRD |= (1 << DDD3) | (1 << DDD4) | (1 << DDD5) | (1 << DDD6); //Pin 3 del puerto D ,//Pin 4 del puerto D, Pin 5 del puerto D, Pin 6 del puerto D
 
   //CONFIGURACION PINES DE ENTRADA
   DDRD &= ~((1 << DDD7) | (1 << DDD2)); // Pin 7 del puerto D como entrada btn_calibra, Pin 2 del puerto D como entrada Modulo_arranque
+
+  //CONFIGURAR PWM MOTORES
+  PWM_init(5000); // 5000 Hz Timer 2
 
   //CONFIGURAR INTERRUPCION
   PCICR |= (1 << PCIE2);
@@ -110,33 +113,46 @@ void loop() {
     stroberOn();
     PORTD &= ~((1 << MOT_IZQ_ATRAS) | (1 << MOT_IZQ_ADELANTE) | (1 << MOT_DER_ATRAS)); // MOTOR OFF
     PORTB &= ~(1 << MOT_DER_ADELANTE); // MOTOR OFF
+    Serial.println("INICIALIZADO");
     break;
   case CALIBRANDO_SENSORES:
+    Serial.println("CALIBRACION RUN");
     PORTB &= ~(1 << PORTB0); // LED GREEN OFF
     PORTB |= (1 << PORTB1); // LED RED ON
+    for (uint8_t i = 0; i < 100; i++) // LIMPIAR lecturaFondoMax
+    {
+      lecturaFondoMax[i] = 0;
+    }
     calibrar();
     PORTB |= (1 << PORTB0); // LED GREEN ON
     PORTB &= ~(1 << PORTB1); // LED RED OFF
+    estado++; //cambio de estado a detenido
+    Serial.println("CALIBRACION FIN--------------------------------");
     break;
   case PARADO:
     blinkOn();
     PORTD &= ~((1 << MOT_IZQ_ATRAS) | (1 << MOT_IZQ_ADELANTE) | (1 << MOT_DER_ATRAS)); // MOTOR OFF
     PORTB &= ~(1 << MOT_DER_ADELANTE); // MOTOR OFF
+    //Serial.println("PARADO");
     break;
   case RASTREANDO:
+    //Serial.println("RASTREANDO");
+    leerSensores();//leer sensores
+    posicion = calcPosicion(); //Calcular posicion
+    Serial.println(posicion);
+
     break;
   }
-
-
 }
 
 ISR(PCINT2_vect) {
-  static uint8_t previousValuePD2 = (PIND & (1 << PIND2)); // M START
-  static uint8_t previousValuePD7 = (PIND & (1 << PIND7)); // BTN CALIBRA
-  _delay_ms(20); //debounce
+  static uint8_t previousValuePD2 = (PIND & (1 << PIND7)); // M START
+  static uint8_t previousValuePD7 = 1; // BTN CALIBRA
+  Serial.println(previousValuePD2);
+  _delay_ms(50); //debounce
   uint8_t actualValuePD2 = (PIND & (1 << PIND2));
   uint8_t actualValuePD7 = (PIND & (1 << PIND7));
-
+  Serial.println(actualValuePD2);
   // M START
   if ((previousValuePD2 != actualValuePD2)) { // from 5V to 0V Falling PARADO : 0V to 5V Rising RASTREANDO
     actualValuePD2 == 0 ? estado = PARADO : estado = RASTREANDO;
@@ -144,34 +160,37 @@ ISR(PCINT2_vect) {
 
   // BTN CALIBRA
   if ((previousValuePD7 != actualValuePD7) && (actualValuePD7 == 0)) { // from 5v to 0v Falling estado ++
-    estado < 4 ? estado++ : estado = 0;
+    estado < RASTREANDO ? estado++ : estado = INICIALIZADO;
   }
+  estado == RASTREANDO ? PWM_on() : PWM_off(); // ON or OFF motors
+  Serial.println(estado);
 }
 
 // calibrar sensores en fondo
 void calibrar() {
-  int total = 0;
-  static unsigned long previousMillis = 0;
+  unsigned long total = 0;
+  // static unsigned long previousMillis = 0;
 
-  if ((millis() - previousMillis) > 15) {
-    for (uint8_t i = 0; i < 100; i++)
+   //if ((millis() - previousMillis) > 15) {
+  for (uint8_t i = 0; i < 100; i++) // CANTIDAD DE ELEMENTOS ARRAY lecturaFondoMax
+  {
+    for (uint8_t j = 0; j < 8; j++)
     {
-      for (uint8_t j = 0; j < 8; j++)
-      {
-        if (ADCGetData(j) > lecturaFondoMax[i]) { // Calcular maximos
-          lecturaFondoMax[i] = ADCGetData(j);
-        }
-        //Serial.print(lecturaFondo[i][j]);
-        //Serial.print("\t");
+      if (ADCGetData(j) > lecturaFondoMax[i]) { // Calcular maximos
+        lecturaFondoMax[i] = ADCGetData(j);
       }
-      Serial.println(lecturaFondoMax[i]);
-      //Serial.println("");
-      total = total + lecturaFondoMax[i];
+      //Serial.print(lecturaFondo[i][j]);
+      //Serial.print("\t");
     }
-    umbral = uint16_t(total / 20) + 20; // lectura erronea 20 puntos por arriba
-    Serial.println(umbral);
-    previousMillis += 15;
+    Serial.print(lecturaFondoMax[i]);
+    Serial.print("\t");
+    //Serial.println("");
+    total = total + lecturaFondoMax[i];
   }
+  umbral = uint16_t(total / 100) + 20; // lectura erronea 20 puntos por arriba
+  Serial.println(umbral);
+  // previousMillis += 15;
+// }
 }
 
 // return sensor 1(linea) o 0(fondo)
@@ -179,16 +198,62 @@ void leerSensores() {
   for (uint8_t i = 0; i < 8; i++)
   {
     //sensores[i] = ADCGetData(i); // Analog values
+    if (linea) {  //linea negra
+      ADCGetData(i) <= umbral ?
+    }
+    else {        //liena blanca
+      ADCGetData(i) >= umbral ?
+    }
     ADCGetData(i) <= umbral ? linea ? sensores[i] = 0 : sensores[i] = 1 : linea ? sensores[i] = 1 : sensores[i] = 0;
-    //Serial.print(sensores[i]);
-    //Serial.print("\t");
+    Serial.print(sensores[i]);
+    Serial.print("\t");
   }
   //Serial.println("");
 }
 
 // calcular posicion
-void calcPosicion() {
+int calcPosicion() {
+  unsigned long sumap = 0;
+  int suma = 0;
+  int pos = 0;
 
+  for (uint8_t i = 0; i < 8; i++)
+  {
+    sumap += sensores[i] * (i + 1) * factor;
+    suma += sensores[i];
+  }
+
+  pos = (sumap / suma);
+  return pos;
+}
+
+// escribir en motores
+void motores(int izq, int der) {
+  //----------- MOT IZQ -----------
+  if (izq >= 0) { //ADELANTE
+    PORTD |= (1 << MOT_IZQ_ADELANTE); // MOTOR ON
+    PORTD &= ~(1 << MOT_IZQ_ATRAS); // MOTOR OFF
+  }
+  else { //ATRAS
+    PORTD &= ~(1 << MOT_IZQ_ADELANTE); // MOTOR ON
+    PORTD |= (1 << MOT_IZQ_ATRAS); // MOTOR OFF
+    izq = izq * (-1); // convert to positive value
+  }
+  //Escribir PWM MOT IZQ
+  setDutyPWMA((int)((izq / 255))); // 0...255 TO 0...100
+
+  //----------- MOT DER -----------
+  if (der >= 0) { //ADELANTE
+    PORTB |= (1 << MOT_DER_ADELANTE); // MOTOR ON
+    PORTD &= ~(1 << MOT_DER_ATRAS); // MOTOR OFF
+  }
+  else { //ATRAS
+    PORTB &= ~(1 << MOT_DER_ADELANTE); // MOTOR ON
+    PORTD |= (1 << MOT_DER_ATRAS); // MOTOR OFF
+    der = der * (-1); // convert to positive value
+  }
+  //Escribir PWM MOT DER
+  setDutyPWMB((int)((der / 255))); // 0...255 TO 0...100
 }
 
 // strober led green and red
