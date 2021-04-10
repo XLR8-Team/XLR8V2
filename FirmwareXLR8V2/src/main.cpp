@@ -63,19 +63,42 @@ volatile uint8_t estado = INICIALIZADO;
 unsigned long t = 0;
 unsigned long t_blink = 0;
 
-
+// Sensores
 volatile uint16_t sensores[8];
 uint16_t lecturaFondoMax[100];
-
 uint8_t factor = 100; // factor multiplicativo sensor promedio ponderado (calculo de posicion)
 int posicion;
+int lastpos;
 
 uint16_t umbral;
 boolean linea = true; // true = Linea Negra // false = Linea Blanca
 
+// -------------- PID ---------------
+float KP=0.18;  //constante proporcional
+float KD=4;     //constante derivativa
+float KI=0.002; //constante integral
+
+uint8_t vel=180;//VELOCIDAD MÁXIMA DEL ROBOT MÁXIMA 255
+
+uint8_t veladelante=200;//VELOCIDAD DEL FRENO DIRECCIÓN ADELANTE
+uint8_t velatras=100;//VELOCIDAD DEL FRENO DIRECCIÓN ATRÁS
+
+uint16_t turbina=1800;//VELOCIDAD DE LA TURBINA MINIMA 1000 MÁXIMA2000
+uint16_t veltest=1650;//VELOCIDAD DE TEST DE LA TURBINA
+// ---------- Variable PID ----------
+int proporcional=0;
+int integral=0;
+int derivativo=0;
+int diferencial=0;
+int last_prop;
+int setpoint=450; // Mitad de sensores
+
+/// datos para la integral
+int errors [6];
+
 void calibrar();
 void leerSensores();
-void motores();
+void motores(int izq, int der);
 void stroberOn();
 void blinkOn();
 
@@ -138,8 +161,10 @@ void loop() {
   case RASTREANDO:
     //Serial.println("RASTREANDO");
     leerSensores();//leer sensores
-    posicion = calcPosicion(); //Calcular posicion
-    Serial.println(posicion);
+    posicion = calcPosicion(); //Calcular posicion   
+    PID(); 
+    Serial.println(diferencial);
+    
 
     break;
   }
@@ -198,13 +223,8 @@ void leerSensores() {
   for (uint8_t i = 0; i < 8; i++)
   {
     //sensores[i] = ADCGetData(i); // Analog values
-    if (linea) {  //linea negra
-      ADCGetData(i) <= umbral ?
-    }
-    else {        //liena blanca
-      ADCGetData(i) >= umbral ?
-    }
-    ADCGetData(i) <= umbral ? linea ? sensores[i] = 0 : sensores[i] = 1 : linea ? sensores[i] = 1 : sensores[i] = 0;
+    linea ? ADCGetData(i) <= umbral ? 0 : 1 : ADCGetData(i) >= (1023 - umbral) ? 0 : 1;
+    //  ADCGetData(i) <= umbral ? linea ? sensores[i] = 0 : sensores[i] = 1 : linea ? sensores[i] = 1 : sensores[i] = 0;
     Serial.print(sensores[i]);
     Serial.print("\t");
   }
@@ -216,15 +236,58 @@ int calcPosicion() {
   unsigned long sumap = 0;
   int suma = 0;
   int pos = 0;
-
   for (uint8_t i = 0; i < 8; i++)
   {
     sumap += sensores[i] * (i + 1) * factor;
     suma += sensores[i];
   }
+  pos = (sumap / suma);  
 
-  pos = (sumap / suma);
+  if (lastpos <= 100 && pos == -1){
+    pos = 0;
+  }else if(lastpos>=700 && pos == -1){
+    pos=800;
+  }
+  lastpos = pos;
   return pos;
+}
+
+void PID(){
+  proporcional = posicion-setpoint;
+  derivativo = proporcional-last_prop;
+  
+  for (uint8_t i = 0; i < 6; i++)
+  {
+    integral += errors[i];
+  }
+  
+  last_prop = proporcional;
+
+  for (uint8_t i = 5; i <= 0; i--)
+  {
+    errors[i]=errors[i-1];  
+  }
+  
+  errors[0]=proporcional;
+
+  diferencial = (proporcional*KP) + (derivativo*KD) + (integral*KI);
+  
+  if(diferencial > vel){
+    diferencial=vel;
+  } else if(diferencial < -vel){
+    diferencial=-vel;
+  }
+
+  diferencial < 0 ? motores(vel, vel+diferencial) : motores(vel-diferencial, vel);
+}
+
+void frenos(){
+  if(posicion<=150){
+    motores(veladelante, -velatras);
+  }
+  if(posicion>=750){
+    motores(-velatras, veladelante);
+  }
 }
 
 // escribir en motores
@@ -293,5 +356,3 @@ void blinkOn() {
   else
     t_blink = t;
 }
-
-//
