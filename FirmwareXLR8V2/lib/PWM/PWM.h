@@ -1,6 +1,6 @@
 /*
  *	PWM.h
- *	PWM for timer 2
+ *	PWM for timer 2 7812 Hz
  *	Created: 09/04/2021 14:15:27
  *	Author: Nicolas
  */
@@ -13,7 +13,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-	void PWM_init(int freq);
+	void PWM_init();
 	void PWM_on();
 	void PWM_off();
 
